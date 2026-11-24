@@ -1,0 +1,22 @@
+{
+  "tablePatterns": [
+    "users", "user", "accounts", "account", "members", "member",
+    "clients", "client", "customers", "customer", "employees", "employee",
+    "persons", "person", "people", "staff", "admins", "admin",
+    "logins", "login", "credentials", "credential",
+    "auth_users", "app_users", "sys_users", "tbl_users", "tb_users",
+    "usuarios", "utilisateurs", "benutzer", "utenti", "utilizadores"
+  ],
+  "usernamePatterns": [
+    "login", "username", "user_name", "user_login", "login_name",
+    "email", "user_email", "email_address",
+    "correo", "mail", "nombre_usuario", "utilisateur", "benutzername",
+    "usuario", "nick", "nickname", "handle", "identifier", "user_id_str"
+  ],
+  "passwordPatterns": [
+    "password", "passwd", "pwd", "pass", "secret", "hash",
+    "password_hash", "hashed_password", "pass_hash", "pw_hash",
+    "encrypted_password", "crypted_password",
+    "contrasena", "contraseña", "clave", "mot_de_passe", "passwort", "senha"
+  ]
+}

@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: 'api-dyn'
+
+scrape_configs:
+
+  # ─── Prometheus itself ───────────────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ─── Host system (CPU, RAM, disk, network) ───────────────────────────────────
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # ─── Container resources (per-container CPU, RAM, network, disk I/O) ─────────
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # ─── Web service uptime & response time ──────────────────────────────────────
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://api:3000/health
+          - http://lambda:4000/health
+          - http://frontend:5173
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

@@ -1,0 +1,306 @@
+version: "3.9"
+
+services:
+
+  app-db:
+    image: postgres:17-alpine
+    container_name: api-dyn-app-db
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: apppass
+      POSTGRES_DB: appdyn
+    ports:
+      - "5433:5432"
+    volumes:
+      - appdbdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d appdyn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: api-dyn-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:10-alpine
+    container_name: api-dyn-postgres
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+#  postgres:
+#    image: postgres:16-alpine
+#    container_name: api-dyn-postgres
+#    environment:
+#      POSTGRES_USER: dev
+#      POSTGRES_PASSWORD: devpass
+#      POSTGRES_DB: postgres
+#    ports:
+#      - "5432:5432"
+#    volumes:
+#      - pgdata:/var/lib/postgresql/data
+#    restart: unless-stopped
+
+  mysql:
+    image: mysql:8
+    container_name: api-dyn-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: mysql
+      MYSQL_USER: dev
+      MYSQL_PASSWORD: devpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "dev", "-pdevpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: api-dyn-api
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      app-db:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: dev
+      MYSQL_PASSWORD: devpass
+      APP_DB_HOST: app-db
+      APP_DB_PORT: 5432
+      APP_DB_USER: app
+      APP_DB_PASSWORD: apppass
+      APP_DB_NAME: appdyn
+      JWT_SECRET: super-secret-change-in-prod
+      ADMIN_EMAIL: admin@apidyn.dev
+      ADMIN_PASSWORD: Admin1234!
+      SCHEMA_JOB_STORE_PATH: /tmp/schema-jobs
+      SCHEMA_TMP_PATH: /tmp/schemas
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      CONTACT_TO_EMAIL: ${CONTACT_TO_EMAIL:-alvar01omer@gmail.com}
+    ports:
+      - "3000:3000"
+    volumes:
+      - schema_jobs:/tmp/schema-jobs
+      - schema_tmp:/tmp/schemas
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: api-dyn-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:3000
+      VITE_LAMBDA_URL: http://localhost:4000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  lambda:
+    build:
+      context: ./lambda
+      dockerfile: Dockerfile
+    container_name: api-dyn-lambda
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: dev
+      MYSQL_PASSWORD: devpass
+      LAMBDA_PORT: 4000
+      JWT_SECRET: super-secret-change-in-prod
+      JWT_EXPIRES_IN: 8h
+      LAMBDA_AUTH_PREFIX: auth-api-dyn
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./lambda:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: api-dyn-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      app-db:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: dev
+      MYSQL_PASSWORD: devpass
+      APP_DB_HOST: app-db
+      APP_DB_PORT: 5432
+      APP_DB_USER: app
+      APP_DB_PASSWORD: apppass
+      APP_DB_NAME: appdyn
+      JWT_SECRET: super-secret-change-in-prod
+      SCHEMA_JOB_STORE_PATH: /tmp/schema-jobs
+      SCHEMA_TMP_PATH: /tmp/schemas
+    command: ["node", "dist/worker/index.js"]
+    volumes:
+      - schema_jobs:/tmp/schema-jobs
+      - schema_tmp:/tmp/schemas
+    restart: unless-stopped
+
+  # ─── Monitoring ───────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: api-dyn-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: api-dyn-grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/api-dyn-monitor.json
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: api-dyn-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: api-dyn-cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: api-dyn-blackbox
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./docker/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  mysqldata:
+  appdbdata:
+  schema_jobs:
+  schema_tmp:
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,18 @@
+FROM node:20-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  default-mysql-client \
+  postgresql-client \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+# Copy non-TS assets (JSON data files) that tsc doesn't include
+RUN find src -name '*.json' -not -name 'tsconfig*' | while read f; do \
+      dest="dist/${f#src/}"; mkdir -p "$(dirname "$dest")"; cp "$f" "$dest"; \
+    done
+
+CMD ["node", "dist/server.js"]

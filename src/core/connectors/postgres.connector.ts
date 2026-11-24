@@ -1,0 +1,295 @@
+import { MikroORM } from '@mikro-orm/postgresql';
+import { BaseConnector } from './base.connector';
+import { DatabaseStructure } from '../models/database-structure.model';
+import { Client } from 'pg';
+import fs from 'fs';
+import { readFile } from 'fs/promises';
+import { spawn } from 'child_process';
+function escapeIdentifier(name: string) {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+function boolEnv(name: string, def = false) {
+  const v = process.env[name];
+  if (v === undefined) return def;
+  return v === 'true';
+}
+export class PostgresConnector extends BaseConnector {
+
+  constructor() {
+    super();
+    this.loadCredentials('postgres');
+  }
+
+  async connect(dbName: string): Promise<void> {
+    this.orm = await this.waitForConnection(() =>
+      MikroORM.init(this.getDbConfig(dbName))
+    );
+  }
+
+  private makeClient(database: string) {
+    return new Client({
+      host: this.host,
+      port: this.port,
+      user: this.user,
+      password: this.password,
+      database,
+      statement_timeout: Number(process.env.SCHEMA_STATEMENT_TIMEOUT_MS ?? 60000),
+      connectionTimeoutMillis: Number(process.env.SCHEMA_CONNECT_TIMEOUT_MS ?? 10000),
+    } as any);
+  }
+  async databaseExists(dbName: string): Promise<boolean> {
+    const client = this.makeClient('postgres');
+    await client.connect();
+    try {
+      const r = await client.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName]);
+      return (r.rowCount ?? 0) > 0;
+    } finally {
+      await client.end();
+    }
+  }
+
+  async createDatabase(dbName: string): Promise<void> {
+    const client = this.makeClient('postgres');
+    await client.connect();
+    try {
+      await client.query(`CREATE DATABASE ${escapeIdentifier(dbName)}`);
+    } finally {
+      await client.end();
+    }
+  }
+
+  async dropDatabase(dbName: string): Promise<void> {
+    const client = this.makeClient('postgres');
+    await client.connect();
+    try {
+      await client.query(
+        `SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+         WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [dbName]
+      );
+
+      await client.query(`DROP DATABASE ${escapeIdentifier(dbName)}`);
+    } finally {
+      await client.end();
+    }
+  }
+
+  async applySchema(dbName: string, filePath: string): Promise<void> {
+    const timeoutMs = Number(process.env.SCHEMA_APPLY_TIMEOUT_MS ?? 600_000); // 10 min default
+    const env = { ...process.env, PGPASSWORD: this.password };
+    const args = [
+      `-h`, this.host,
+      `-p`, String(this.port),
+      `-U`, this.user,
+      `-d`, dbName,
+      `-v`, 'ON_ERROR_STOP=1',
+    ];
+
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('psql', args, { stdio: ['pipe', 'ignore', 'pipe'], env });
+
+      const timer = setTimeout(() => {
+        proc.kill('SIGTERM');
+        reject(new Error(`psql timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      let stderrOutput = '';
+      proc.stderr.on('data', (d) => { stderrOutput += d.toString(); });
+      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        code === 0
+          ? resolve()
+          : reject(new Error(`psql exited with code ${code}: ${stderrOutput.trim()}`));
+      });
+
+      const readStream = fs.createReadStream(filePath);
+      // Suppress EPIPE: if psql exits early (ON_ERROR_STOP), the pipe would
+      // throw an unhandled error and crash the worker process.
+      proc.stdin.on('error', () => {});
+      readStream.pipe(proc.stdin);
+    });
+  }
+
+  async applySchemaFile(dbName: string, filePath: string): Promise<void> {
+    const sql = await readFile(filePath, 'utf8');
+    const client = this.makeClient(dbName);
+    await client.connect();
+
+    const useTx = boolEnv('SCHEMA_USE_TRANSACTION', true);
+
+    try {
+      if (useTx) await client.query('BEGIN');
+      await client.query(sql); // permite múltiples statements en query simple
+      if (useTx) await client.query('COMMIT');
+    } catch (e) {
+      if (useTx) {
+        try { await client.query('ROLLBACK'); } catch { }
+      }
+      throw e;
+    } finally {
+      await client.end();
+    }
+  }
+  async loadSchema(): Promise<DatabaseStructure> {
+    const connection = this.orm.em.getConnection();
+
+    // 1️⃣ Tablas
+    const tables = await connection.execute(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+  `);
+
+    // 2️⃣ Columnas
+    const columns = await connection.execute(`
+    SELECT
+      table_name,
+      column_name,
+      data_type,
+      is_nullable,
+      column_default
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+  `);
+
+    // 3️⃣ Foreign Keys
+    const foreignKeys = await connection.execute(`
+    SELECT
+        tc.table_name,
+        kcu.column_name,
+        ccu.table_name AS referenced_table,
+        ccu.column_name AS referenced_column,
+        tc.constraint_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_schema = 'public'
+  `);
+
+    // 4️⃣ Primary Keys
+    const primaryKeys = await connection.execute(`
+    SELECT kcu.table_name, kcu.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+      AND tc.table_schema = kcu.table_schema
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+      AND tc.table_schema = 'public'
+  `);
+
+    const pkSet = new Set<string>();
+    for (const pk of primaryKeys as any[]) {
+      pkSet.add(`${pk.table_name}:${pk.column_name}`);
+    }
+
+    // 5️⃣ Índices PostgreSQL (excluye PK)
+    const indexes = await connection.execute(`
+SELECT
+  t.relname AS table_name,
+  i.relname AS index_name,
+  ix.indisunique AS is_unique,
+  a.attname AS column_name,
+  s.n AS column_order
+FROM pg_class t
+JOIN pg_index ix ON t.oid = ix.indrelid
+JOIN pg_class i ON i.oid = ix.indexrelid
+JOIN generate_subscripts(ix.indkey, 1) AS s(n) ON TRUE
+JOIN pg_attribute a
+  ON a.attrelid = t.oid
+ AND a.attnum = ix.indkey[s.n]
+WHERE t.relkind = 'r'
+  AND NOT ix.indisprimary
+  AND t.relnamespace = (
+    SELECT oid FROM pg_namespace WHERE nspname = 'public'
+  )
+ORDER BY table_name, index_name, column_order;
+  `);
+
+    const structure: DatabaseStructure = { tables: [] };
+    const tableMap = new Map<string, any>();
+
+    // Inicializar tablas
+    for (const t of tables as any[]) {
+      tableMap.set(t.table_name, {
+        name: t.table_name,
+        columns: [],
+        foreignKeys: [],
+        indexes: [],
+      });
+    }
+
+    // Agrupar columnas
+    for (const col of columns as any[]) {
+      const table = tableMap.get(col.table_name);
+      if (!table) continue;
+
+      table.columns.push({
+        name: col.column_name,
+        type: col.data_type,
+        nullable: col.is_nullable === 'YES',
+        default: col.column_default,
+        isPrimary: pkSet.has(`${col.table_name}:${col.column_name}`),
+      });
+    }
+
+    // Agrupar foreign keys — deduplicate by constraintName (kcu×ccu JOIN produces duplicates)
+    const fkSeen = new Set<string>();
+    for (const fk of foreignKeys as any[]) {
+      const table = tableMap.get(fk.table_name);
+      if (!table) continue;
+      const key = `${fk.table_name}:${fk.constraint_name}`;
+      if (fkSeen.has(key)) continue;
+      fkSeen.add(key);
+      table.foreignKeys.push({
+        columnName: fk.column_name,
+        referencedTable: fk.referenced_table,
+        referencedColumn: fk.referenced_column,
+        constraintName: fk.constraint_name,
+      });
+    }
+
+    // Agrupar índices
+    const indexMap = new Map<string, any>();
+
+    for (const idx of indexes as any[]) {
+      const key = `${idx.table_name}:${idx.index_name}`;
+
+      if (!indexMap.has(key)) {
+        indexMap.set(key, {
+          tableName: idx.table_name,
+          name: idx.index_name,
+          unique: idx.is_unique,
+          columns: [],
+        });
+      }
+
+      indexMap.get(key).columns.push(idx.column_name);
+    }
+
+    // Asignar índices a cada tabla
+    for (const index of indexMap.values()) {
+      const table = tableMap.get(index.tableName);
+      if (!table) continue;
+
+      table.indexes.push({
+        name: index.name,
+        unique: index.unique,
+        columns: index.columns,
+      });
+    }
+
+    structure.tables = Array.from(tableMap.values());
+    return structure;
+  }
+  async close(): Promise<void> {
+    if (this.orm) {
+      await this.orm.close(true);
+    }
+  }
+}

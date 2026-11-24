@@ -1,0 +1,120 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f4f5f7;
+  color: #1a1a2e;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+header h1 { font-size: 1.75rem; font-weight: 700; }
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 1.5rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.card h2 { font-size: 1.1rem; font-weight: 600; }
+.card h3 { font-size: 0.95rem; font-weight: 600; margin-top: 0.25rem; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.field label { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; color: #555; }
+
+select, input[type="file"] {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #d0d3da;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: #fafafa;
+  width: 100%;
+}
+
+button {
+  padding: 0.55rem 1.25rem;
+  background: #1a1a2e;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: opacity 0.15s;
+}
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:hover:not(:disabled) { opacity: 0.85; }
+
+.meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.88rem;
+  border-bottom: 1px solid #f0f0f0;
+  padding-bottom: 0.4rem;
+}
+.meta-row span:first-child { color: #777; }
+
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.82rem;
+  background: #f0f0f0;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+.progress-bar {
+  height: 6px;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.error {
+  color: #e74c3c;
+  font-size: 0.85rem;
+  background: #fdf0ef;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid #e74c3c;
+}
+
+.muted { color: #888; font-size: 0.85rem; }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.json-block {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  background: #1a1a2e;
+  color: #a8d8a8;
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 300px;
+  white-space: pre;
+}
